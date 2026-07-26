@@ -3,9 +3,21 @@
 -- TOP-5 репозиторіїв за кількістю подій у кожному event_type: ROW_NUMBER() + QUALIFY.
 -- Контракт колонок нижче; заглушка повертає 0 рядків.
 -- =====================================================================
+
+with events_per_repo as (
+    select event_type,
+    repo_name,
+    count(*) as event_count
+    from {{ref('stg_events')}}
+    group by event_type, repo_name
+)
 SELECT
-    NULL::VARCHAR AS event_type,
-    NULL::VARCHAR AS repo_name,
-    NULL::BIGINT  AS event_count,
-    NULL::BIGINT  AS type_rank
-WHERE false  -- TODO: агрегувати stg_events по (event_type, repo_name), ROW_NUMBER() OVER (...), QUALIFY type_rank <= 5
+    event_type,
+    repo_name,
+    event_count,
+    row_number() over (
+        partition by event_type
+        order by event_count desc, repo_name
+    ) as type_rank
+from events_per_repo
+QUALIFY type_rank <=5
