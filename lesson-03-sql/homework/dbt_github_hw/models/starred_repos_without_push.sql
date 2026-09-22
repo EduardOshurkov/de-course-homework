@@ -3,6 +3,19 @@
 -- Репозиторії зі зіркою (WatchEvent), але без жодного PushEvent: anti-join (NOT EXISTS).
 -- Контракт колонок нижче; заглушка повертає 0 рядків.
 -- =====================================================================
+
+with watched as (
+    select distinct repo_name
+    from {{ref('stg_events')}}
+    where event_type = 'WatchEvent'
+)
+
 SELECT
-    NULL::VARCHAR AS repo_name
-WHERE false  -- TODO: репо з WatchEvent мінус репо, що мають PushEvent, у stg_events
+    w.repo_name
+FROM watched w
+where not exists (
+    select 1
+    from {{ref('stg_events')}} p
+    where p.event_type = 'PushEvent'
+        and p.repo_name = w.repo_name
+)
