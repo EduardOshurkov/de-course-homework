@@ -6,17 +6,51 @@
 --          comments, label_names, comment_events_seen, last_event_at, hours_to_close
 
 -- TODO: замініть заглушку на запит згідно зі SPEC.md
+{{ config(materialized='table') }}
+
+with issue_events as (
+    select
+        repo_name,
+        event_id,
+        event_type,
+        created_at as event_at,
+        from_json(
+            payload,
+            'struct<action:string,issue:struct<number:int,title:string,state:string,created_at:string,closed_at:string,comments:int,author_association:string,user:struct<login:string>,labels:array<struct<name:string>>>>'
+        ) as p
+    from {{ ref('events') }}
+    where event_type in ('IssuesEvent', 'IssueCommentEvent')
+),
+
+with_meta as (
+    select
+        repo_name,
+        p.issue.number as issue_number,
+        p.issue.title as title,
+        p.issue.user.login as author_login,
+        p.issue.state as state,
+        to_timestamp(p.issue.created_at) as opened_at,
+        to_timestamp(p.issue.closed_at) as closed_at,
+        p.issue.comments as comments,
+        p.issue.labels.name as label_names,
+        event_at,
+        event_id,
+        count(case when event_type = 'IssueCommentEvent' then 1 end)
+            over (partition by repo_name, p.issue.number) as comment_events_seen,
+        row_number() over (
+            partition by repo_name, p.issue.number
+            order by event_at desc, event_id desc
+        ) as rn
+    from issue_events
+)
+
 select
-    cast(null as string)        as repo_name,
-    cast(null as int)           as issue_number,
-    cast(null as string)        as title,
-    cast(null as string)        as author_login,
-    cast(null as string)        as state,
-    cast(null as timestamp)     as opened_at,
-    cast(null as timestamp)     as closed_at,
-    cast(null as int)           as comments,
-    cast(null as array<string>) as label_names,
-    cast(null as bigint)        as comment_events_seen,
-    cast(null as timestamp)     as last_event_at,
-    cast(null as double)        as hours_to_close
-where false
+    repo_name, issue_number, title, author_login, state,
+    opened_at, closed_at, comments, label_names,
+    comment_events_seen,
+    event_at as last_event_at,
+    case when closed_at is not null
+         then (unix_timestamp(closed_at) - unix_timestamp(opened_at)) / 3600.0
+    end as hours_to_close
+from with_meta
+where rn = 1
