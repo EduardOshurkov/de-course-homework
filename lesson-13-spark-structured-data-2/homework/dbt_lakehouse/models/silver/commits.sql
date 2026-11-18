@@ -7,17 +7,66 @@
 -- Пастка: `distinct` — reserved word, у DDL-схемі та доступі до поля потрібні backticks.
 
 -- TODO: замініть заглушку на запит згідно зі SPEC.md
+{{config(materialized='table')}}
+
+with push_events as (
+    select
+        event_id,
+        repo_name,
+        actor_login as pushed_by,
+        created_at as pushed_at,
+        from_json(
+            payload,
+            'struct<size:int,distinct_size:int,ref:string,commits:array<struct<sha:string,message:string,`distinct`:boolean,author:struct<name:string,email:string>>>>'
+        ) as p
+    from {{ref('events')}}
+    where event_type = 'PushEvent'
+),
+
+exploded as (
+    select
+        event_id,
+        repo_name,
+        pushed_by,
+        pushed_at,
+        regexp_replace(p.ref, '^refs/heads/', '') as branch,
+        c.sha as commit_sha,
+        c.message as message,
+        c.`distinct` as is_distinct,
+        c.author.name as author_name,
+        c.author.email as author_email
+    from push_events
+    lateral view explode(p.commits) as c
+),
+
+enriched as (
+    select
+        commit_sha,
+        repo_name,
+        pushed_by,
+        branch,
+        author_name,
+        author_email,
+        message,
+        is_distinct,
+        pushed_at,
+        (message like 'Merge %') as is_merge_commit,
+        split(message, '\n')[0] as message_subject,
+        length(message) as message_length,
+        event_id
+    from exploded
+),
+
+deduped as (
+    select
+        *,
+        row_number() over (partition by commit_sha order by pushed_at, event_id) as rn
+    from enriched
+)
+
 select
-    cast(null as string)    as commit_sha,
-    cast(null as string)    as repo_name,
-    cast(null as string)    as pushed_by,
-    cast(null as string)    as branch,
-    cast(null as string)    as author_name,
-    cast(null as string)    as author_email,
-    cast(null as string)    as message,
-    cast(null as boolean)   as is_distinct,
-    cast(null as timestamp) as pushed_at,
-    cast(null as boolean)   as is_merge_commit,
-    cast(null as string)    as message_subject,
-    cast(null as int)       as message_length
-where false
+    commit_sha, repo_name, pushed_by, branch,
+    author_name, author_email, message, is_distinct,
+    pushed_at, is_merge_commit, message_subject, message_length
+from deduped
+where rn = 1
